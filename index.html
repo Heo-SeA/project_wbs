@@ -212,44 +212,48 @@
         }
 
         // 새 사업 등록 및 10개 단계 자동 생성 템플릿 로직 결합
+        // 🚀 [수정 완료] 수파베이스 컬럼명(color_idx)을 완벽하게 일치시킨 함수
         async function createNewProject() {
-            const title = prompt("새로운 사업명을 입력하세요:");
-            if(!title) return;
+        const title = prompt("새로운 사업명을 입력하세요:");
+        if(!title) return;
 
-            const defaultStart = "2026-06-01";
-            const defaultEnd = "2026-08-31";
+        const defaultStart = "2026-06-01";
+        const defaultEnd = "2026-08-31";
+    
+        // 1. 부모 프로젝트 테이블에 추가
+        const { data: newProj, error: pError } = await supabase
+        .from('projects')
+        .insert([{ title, start_date: defaultStart, end_date: defaultEnd }])
+        .select()
+        .single();
 
-            // 1. 부모 프로젝트 테이블에 추가
-            const { data: newProj, error: pError } = await supabase
-                .from('projects')
-                .insert([{ title, start_date: defaultStart, end_date: defaultEnd }])
-                .select()
-                .single();
+    if (pError) {
+        console.error("프로젝트 생성 에러:", pError);
+        return alert('사업 등록에 실패했습니다. (콘솔 창 확인 필요)');
+    }
 
-            if (pError) {
-                console.error(pError);
-                return alert('사업 등록에 실패했습니다.');
-            }
+    // 2. 생성된 부모 ID 연동하여 하위 9단계 자동 세팅 생성
+    const defaultStages = ["계약", "계획 및 착수", "요구사항 분석", "설계", "디자인", "퍼블리싱", "개발", "테스트", "완료"];
+    
+    // 💡 중요: colorIdx를 color_idx로 명확하게 수정했습니다.
+    const autoBundles = defaultStages.map((stageName, index) => ({
+        project_id: newProj.id,
+        name: stageName,
+        start_date: defaultStart,
+        end_date: defaultStart,
+        memo: `[${stageName}] 단계에 대한 상세 자유 메모를 기록하세요.`,
+        color_idx: index // 👈 여기 언더바(_)가 핵심입니다!
+    }));
 
-            // 2. 생성된 부모 ID 연동하여 하위 9단계 자동 세팅 생성
-            const defaultStages = ["계약", "계획 및 착수", "요구사항 분석", "설계", "디자인", "퍼블리싱", "개발", "테스트", "완료"];
-            const autoBundles = defaultStages.map((stageName, index) => ({
-                project_id: newProj.id,
-                name: stageName,
-                start_date: defaultStart,
-                end_date: defaultStart,
-                memo: `[${stageName}] 단계에 대한 상세 자유 메모를 기록하세요.`,
-                color_idx: index
-            }));
+    const { error: bError } = await supabase.from('bundles').insert(autoBundles);
+    if (bError) {
+        console.error("기본 묶음 생성 에러:", bError);
+        return alert('기본 큰 묶음 자동 템플릿 생성 실패 (콘솔 창 확인 필요)');
+    }
 
-            const { error: bError } = await supabase.from('bundles').insert(autoBundles);
-            if (bError) {
-                console.error(bError);
-                return alert('기본 큰 묶음 자동 템플릿 생성 실패');
-            }
-
-            loadProjects();
-        }
+    // 성공 시 리로드
+    loadProjects();
+}
 
         function openProjectWBS(id) {
             currentProject = projects.find(p => p.id === id);
