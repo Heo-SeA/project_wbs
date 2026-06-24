@@ -1,0 +1,294 @@
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+
+<script>
+    // 2. 내 수파베이스 프로젝트 정보 설정 (대시보드 Settings -> API에서 확인 가능)
+    const SUPABASE_URL = 'https://nydpblyanfcfmauztcdw.supabase.co/rest/v1/'; // 본인 URL로 변경
+    const SUPABASE_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im55ZHBibHlhbmZjZm1hdXp0Y2R3Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODIyNjI2MzIsImV4cCI6MjA5NzgzODYzMn0.tc8V0fPrjXiglvHiS70rMCjvI8aPy9Ep_0JaiweRVoE'; // 본인 Anon Key로 변경
+    const supabase = supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
+
+    const holidays2026 = ["01-01", "02-16", "02-17", "02-18", "03-01", "05-05", "05-24", "06-06", "08-15", "09-24", "09-25", "09-26", "10-03", "10-09", "12-25"];
+    let projects = [];
+    let currentProject = null;
+    let activeBundleId = null;
+    const CELL_WIDTH = 40;
+
+    const getDiffDays = (d1, d2) => Math.ceil((new Date(d2) - new Date(d1)) / (1000 * 60 * 60 * 24));
+
+    // 3. [초기화] 서버에서 전체 사업 리스트 가져오기
+    async function loadProjects() {
+        const { data, error } = await supabase
+            .from('projects')
+            .select('*, bundles(*)'); // 사업 정보와 하위 번들 정보를 한 번에 결합해서 쿼리
+        
+        if (error) {
+            console.error(error);
+            alert('데이터를 불러오지 못했습니다.');
+        } else {
+            projects = data || [];
+            renderDashboard();
+        }
+    }
+
+    // 4. [대시보드] 화면 그리기
+    function renderDashboard() {
+        document.getElementById('project-list-page').style.display = 'block';
+        document.getElementById('wbs-detail-page').style.display = 'none';
+        
+        const container = document.getElementById('project-grid-container');
+        container.innerHTML = '';
+
+        if(projects.length === 0) {
+            container.innerHTML = `<div style="color:#64748b; grid-column: 1/-1; text-align:center; padding:40px;">등록된 사업이 없습니다. 상단의 '새 사업 등록' 버튼을 눌러보세요!</div>`;
+            return;
+        }
+
+        projects.forEach(p => {
+            const card = document.createElement('div');
+            card.className = 'project-card';
+            card.onclick = () => openProjectWBS(p.id);
+            card.innerHTML = `
+                <h3>📁 ${p.title}</h3>
+                <div class="p-date">📅 기간: ${p.start_date} ~ ${p.end_date}</div>
+                <div style="margin-top:10px; font-size:12px; color:#009688; font-weight:bold;">자동 세팅된 큰 묶음: ${p.bundles ? p.bundles.length : 0}개</div>
+            `;
+            container.appendChild(card);
+        });
+    }
+
+    // 5. [등록] 새 사업 및 10개 큰 묶음 자동 템플릿 DB 서버에 저장
+    async function createNewProject() {
+        const title = prompt("새로운 사업명을 입력하세요:");
+        if(!title) return;
+
+        const defaultStart = "2026-06-01";
+        const defaultEnd = "2026-08-31";
+
+        // 1. 프로젝트 테이블에 먼저 삽입
+        const { data: newProj, error: pError } = await supabase
+            .from('projects')
+            .insert([{ title, start_date: defaultStart, end_date: defaultEnd }])
+            .select()
+            .single();
+
+        if (pError) return alert('사업 등록 실패');
+
+        // 2. 생성된 프로젝트 ID를 엮어서 10개 묶음 자동 세팅 후 서버에 대량 삽입
+        const defaultStages = ["계약", "계획 및 착수", "요구사항 분석", "설계", "디자인", "퍼블리싱", "개발", "테스트", "완료"];
+        const autoBundles = defaultStages.map((stageName, index) => ({
+            project_id: newProj.id,
+            name: stageName,
+            start_date: defaultStart,
+            end_date: defaultStart,
+            memo: `[${stageName}] 단계에 대한 상세 자유 메모를 기록하세요.`,
+            color_idx: index
+        }));
+
+        const { error: bError } = await supabase.from('bundles').insert(autoBundles);
+        if (bError) return alert('기본 템플릿 세팅 실패');
+
+        // 리로드
+        loadProjects();
+    }
+
+    // [WBS 상세 진입]
+    function openProjectWBS(id) {
+        currentProject = projects.find(p => p.id === id);
+        document.getElementById('project-list-page').style.display = 'none';
+        document.getElementById('wbs-detail-page').style.display = 'block';
+        
+        document.getElementById('view-project-title').innerText = `🚀 ${currentProject.title}`;
+        document.getElementById('p-start').value = currentProject.start_date;
+        document.getElementById('p-end').value = currentProject.end_date;
+
+        initTimeline();
+    }
+
+    function backToDashboard() { currentProject = null; loadProjects(); }
+
+    // [수정] 사업 전체 기간 변경 시 DB 동기화
+    async function updateProjectPeriod() {
+        if(!currentProject) return;
+        const start = document.getElementById('p-start').value;
+        const end = document.getElementById('p-end').value;
+
+        const { error } = await supabase
+            .from('projects')
+            .update({ start_date: start, end_date: end })
+            .eq('id', currentProject.id);
+
+        if(!error) {
+            currentProject.start_date = start;
+            currentProject.end_date = end;
+            initTimeline();
+        }
+    }
+
+    // 달력 격자선 그리기 (기존 로직 동일 유지, 변수명만 DB 컬럼명 포맷에 매칭)
+    function initTimeline() {
+        if(!currentProject) return;
+        const totalDays = getDiffDays(currentProject.start_date, currentProject.end_date) + 1;
+        
+        const monthHeader = document.getElementById('month-header');
+        const dayHeader = document.getElementById('day-header');
+        monthHeader.innerHTML = ''; dayHeader.innerHTML = '';
+        
+        let currentDate = new Date(currentProject.start_date);
+        let currentMonth = -1, monthDaysCount = 0, monthCell = null;
+
+        for (let i = 0; i < totalDays; i++) {
+            const y = currentDate.getFullYear();
+            const m = currentDate.getMonth() + 1;
+            const d = currentDate.getDate();
+            const dayOfWeek = currentDate.getDay(); 
+            const mmdd = `${String(m).padStart(2,'0')}-${String(d).padStart(2,'0')}`;
+
+            if (m !== currentMonth) {
+                if (monthCell) monthCell.style.width = (monthDaysCount * CELL_WIDTH) + 'px';
+                currentMonth = m; monthDaysCount = 0;
+                monthCell = document.createElement('div');
+                monthCell.className = 'month-cell';
+                monthCell.innerText = `${y}년 ${m}월`;
+                monthHeader.appendChild(monthCell);
+            }
+            monthDaysCount++;
+            
+            const dayCell = document.createElement('div');
+            dayCell.className = 'day-cell';
+            dayCell.innerText = d;
+            
+            if (dayOfWeek === 6) dayCell.classList.add('sat');
+            else if (dayOfWeek === 0 || holidays2026.includes(mmdd)) dayCell.classList.add('sun');
+
+            dayHeader.appendChild(dayCell);
+            currentDate.setDate(currentDate.getDate() + 1);
+        }
+        if (monthCell) monthCell.style.width = (monthDaysCount * CELL_WIDTH) + 'px';
+        document.getElementById('timeline-header').style.width = (totalDays * CELL_WIDTH) + 'px';
+
+        renderWorkspace();
+    }
+
+    function renderWorkspace() {
+        const leftContainer = document.getElementById('left-rows');
+        const chartContainer = document.getElementById('chart-rows');
+        leftContainer.innerHTML = ''; chartContainer.innerHTML = '';
+
+        const totalDays = getDiffDays(currentProject.start_date, currentProject.end_date) + 1;
+        const sortedBundles = (currentProject.bundles || []).sort((a,b) => a.id - b.id);
+
+        sortedBundles.forEach((item) => {
+            const leftRow = document.createElement('div');
+            leftRow.className = 'task-row';
+            leftRow.innerHTML = `
+                <div class="task-row-top">
+                    <input type="text" class="task-name-input" value="${item.name}" onchange="updateBundle(${item.id}, 'name', this.value)">
+                    <a class="del-link" onclick="deleteBundle(${item.id})">삭제</a>
+                </div>
+                <div class="date-inputs">
+                    <input type="date" value="${item.start_date}" min="${currentProject.start_date}" max="${currentProject.end_date}" onchange="updateBundle(${item.id}, 'start_date', this.value)">
+                    <span>~</span>
+                    <input type="date" value="${item.end_date}" min="${currentProject.start_date}" max="${currentProject.end_date}" onchange="updateBundle(${item.id}, 'end_date', this.value)">
+                </div>
+            `;
+            leftContainer.appendChild(leftRow);
+
+            const chartRow = document.createElement('div');
+            chartRow.className = 'chart-row';
+            chartRow.style.width = (totalDays * CELL_WIDTH) + 'px';
+            
+            let currDate = new Date(currentProject.start_date);
+            for(let k=0; k<totalDays; k++) {
+                const bgCell = document.createElement('div');
+                bgCell.className = 'grid-line-cell';
+                const dayOfWeek = currDate.getDay();
+                const mmdd = `${String(currDate.getMonth()+1).padStart(2,'0')}-${String(currDate.getDate()).padStart(2,'0')}`;
+                
+                if (dayOfWeek === 6) bgCell.classList.add('sat');
+                else if (dayOfWeek === 0 || holidays2026.includes(mmdd)) bgCell.classList.add('sun');
+                
+                chartRow.appendChild(bgCell);
+                currDate.setDate(currDate.getDate() + 1);
+            }
+
+            const offsetDays = getDiffDays(currentProject.start_date, item.start_date);
+            const durationDays = getDiffDays(item.start_date, item.end_date) + 1;
+
+            const bar = document.createElement('div');
+            bar.className = `gantt-bar color-${item.color_idx % 9}`;
+            bar.style.left = (offsetDays * CELL_WIDTH) + 'px';
+            bar.style.width = (durationDays * CELL_WIDTH - 4) + 'px';
+            bar.innerText = item.name;
+            bar.onclick = () => openMemoModal(item.id);
+
+            chartRow.appendChild(bar);
+            chartContainer.appendChild(chartRow);
+        });
+    }
+
+    // [추가] 빈 번들 생성 후 DB 저장
+    async function addBundle() {
+        if(!currentProject) return;
+        const newBundle = {
+            project_id: currentProject.id,
+            name: '새로운 큰 묶음',
+            start_date: currentProject.start_date,
+            end_date: currentProject.start_date,
+            memo: '',
+            color_idx: currentProject.bundles.length
+        };
+
+        const { data, error } = await supabase.from('bundles').insert([newBundle]).select().single();
+        if(!error) {
+            currentProject.bundles.push(data);
+            initTimeline();
+        }
+    }
+
+    // [삭제] DB에서 해당 번들 삭제
+    async function deleteBundle(id) {
+        const { error } = await supabase.from('bundles').delete().eq('id', id);
+        if(!error) {
+            currentProject.bundles = currentProject.bundles.filter(b => b.id !== id);
+            initTimeline();
+        }
+    }
+
+    // [수정] 번들 날짜/이름 변경 시 DB 동기화
+    async function updateBundle(id, field, value) {
+        const target = currentProject.bundles.find(b => b.id === id);
+        if(target) {
+            const { error } = await supabase.from('bundles').update({ [field]: value }).eq('id', id);
+            if(!error) {
+                target[field] = value;
+                initTimeline();
+            }
+        }
+    }
+
+    function openMemoModal(id) {
+        const target = currentProject.bundles.find(b => b.id === id);
+        if(target) {
+            activeBundleId = id;
+            document.getElementById('modal-title').innerText = `📝 [${target.name}] 상세 계획 메모`;
+            document.getElementById('modal-text').value = target.memo || '';
+            document.getElementById('memo-modal').style.display = 'flex';
+        }
+    }
+    function closeModal() { document.getElementById('memo-modal').style.display = 'none'; }
+    
+    // [수정] 모달창 자유 메모 저장 시 DB 동기화
+    async function saveModalMemo() {
+        const text = document.getElementById('modal-text').value;
+        const { error } = await supabase.from('bundles').update({ memo: text }).eq('id', activeBundleId);
+        
+        if(!error) {
+            const target = currentProject.bundles.find(b => b.id === activeBundleId);
+            if(target) target.memo = text;
+            alert('메모가 Supabase 클라우드에 영구 저장되었습니다.');
+        }
+        closeModal();
+    }
+
+    // 첫 시작점: 로컬 스토리지가 아니라 수파베이스 백엔드 서버에서 호출
+    loadProjects();
+</script>
